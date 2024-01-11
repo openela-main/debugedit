@@ -1,6 +1,6 @@
 Name: debugedit
 Version: 5.0
-Release: 3%{?dist}
+Release: 4%{?dist}
 Summary: Tools for debuginfo creation
 License: GPLv3+ and GPLv2+ and LGPLv2+
 URL: https://sourceware.org/debugedit/
@@ -39,6 +39,7 @@ Requires: grep
 %global _hardened_build 1
 
 Patch1: 0001-tests-Handle-zero-directory-entry-in-.debug_line-DWA.patch
+Patch2: 0002-scripts-find-debuginfo.in-Add-q-quiet.patch
 
 %description
 The debugedit project provides programs and scripts for creating
@@ -82,6 +83,9 @@ make check %{?_smp_mflags}
 %{_mandir}/man1/find-debuginfo.1*
 
 %changelog
+* Tue Mar 28 2023 Mark Wielaard <mjw@redhat.com> - 5.0-4
+- Add 0002-scripts-find-debuginfo.in-Add-q-quiet.patch
+
 * Mon Aug 09 2021 Mohan Boddu <mboddu@redhat.com> - 5.0-3
 - Rebuilt for IMA sigs, glibc 2.34, aarch64 flags
   Related: rhbz#1991688
