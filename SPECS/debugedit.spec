@@ -1,6 +1,6 @@
 Name: debugedit
 Version: 5.0
-Release: 4%{?dist}
+Release: 5%{?dist}
 Summary: Tools for debuginfo creation
 License: GPLv3+ and GPLv2+ and LGPLv2+
 URL: https://sourceware.org/debugedit/
@@ -40,6 +40,7 @@ Requires: grep
 
 Patch1: 0001-tests-Handle-zero-directory-entry-in-.debug_line-DWA.patch
 Patch2: 0002-scripts-find-debuginfo.in-Add-q-quiet.patch
+Patch3: 0001-debugedit-Add-support-for-.debug_str_offsets-DW_FORM.patch
 
 %description
 The debugedit project provides programs and scripts for creating
@@ -83,6 +84,9 @@ make check %{?_smp_mflags}
 %{_mandir}/man1/find-debuginfo.1*
 
 %changelog
+* Mon Dec  4 2023 Mark Wielaard <mjw@redhat.com> - 5.0-5
+- Add 0001-debugedit-Add-support-for-.debug_str_offsets-DW_FORM.patch
+
 * Tue Mar 28 2023 Mark Wielaard <mjw@redhat.com> - 5.0-4
 - Add 0002-scripts-find-debuginfo.in-Add-q-quiet.patch
 
