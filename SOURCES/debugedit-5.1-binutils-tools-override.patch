@@ -1,0 +1,107 @@
+commit 737da0cb62a2bd614040c3e11b7016aca743c34f
+Author: Mark Wielaard <mark@klomp.org>
+Date:   Thu Feb 20 16:30:07 2025 +0100
+
+    find-debuginfo: Allow overriding binutils tools
+    
+    find-debuginfo relies on a couple of binutils tools (readelf, objcopy
+    and nm) that might not have been build with cross-arch support. Make
+    it possible to configure with specific (target) versions and to
+    override the specific binaries by setting READELF, OBJCOPY or NM
+    environment variables.
+    
+        * Makefile.am (do_subst): Add OBJCOPY and NM substitutions.
+        * configure.ac: Add OBJCOPY and NM tools override.
+        * scripts/find-debuginfo.in: Allow READELF, OBJCOPY and NM
+        environment overrides.
+    
+    Signed-off-by: Mark Wielaard <mark@klomp.org>
+
+diff --git a/Makefile.am b/Makefile.am
+index 35fd947f8db2..562ffa46fa30 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -34,6 +34,8 @@ CLEANFILES = $(bin_SCRIPTS)
+ do_subst = ($(SED) -e 's,[@]PACKAGE[@],$(PACKAGE),g' \
+ 		   -e 's,[@]VERSION[@],$(VERSION),g' \
+ 		   -e 's,[@]READELF[@],$(READELF),g' \
++		   -e 's,[@]OBJCOPY[@],$(OBJCOPY),g' \
++		   -e 's,[@]NM[@],$(NM),g' \
+ 		   -e 's,[@]DWZ_J[@],$(DWZ_J),g')
+ 
+ find-debuginfo: $(top_srcdir)/scripts/find-debuginfo.in Makefile
+diff --git a/configure.ac b/configure.ac
+index 32dd27d287a3..ad4d70c63995 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -45,6 +45,8 @@ m4_version_prereq([2.70], [AC_PROG_CC], [AC_PROG_CC_C99])
+ AC_PROG_LN_S
+ AC_CHECK_TOOL([LD], [ld])
+ AC_CHECK_TOOL([READELF], [readelf])
++AC_CHECK_TOOL([OBJCOPY], [objcopy])
++AC_CHECK_TOOL([NM], [nm])
+ AM_MISSING_PROG(HELP2MAN, help2man)
+ 
+ # Whether dwz support -j.
+diff --git a/scripts/find-debuginfo.in b/scripts/find-debuginfo.in
+index 7f2c00728b94..4cc49f2f8cd0 100755
+--- a/scripts/find-debuginfo.in
++++ b/scripts/find-debuginfo.in
+@@ -108,6 +108,14 @@ EOF
+ install_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ PATH=${install_dir}:$PATH
+ 
++# A couple of binutils helper tools are used in this script.
++# Let the user override them by setting them in environment variables.
++# The default is the (target variant) of the tool found when debugedit
++# was configured.
++READELF=${READELF:=@READELF@}
++OBJCOPY=${OBJCOPY:=@OBJCOPY@}
++NM=${NM:=@NM@}
++
+ # With -g arg, pass it to strip on libraries or executables.
+ strip_g=false
+ 
+@@ -360,7 +368,7 @@ add_minidebug()
+   # symbol and NOBITS sections so cannot use --keep-only because that is
+   # too aggressive. Field $2 is the section name, $3 is the section type
+   # and $8 are the section flags.
+-  local remove_sections=`@READELF@ -W -S "$debuginfo" \
++  local remove_sections=`${READELF} -W -S "$debuginfo" \
+ 	| awk '{ if (index($2,".debug_") != 1 \
+ 		     && ($3 == "PROGBITS" || $3 == "NOTE" || $3 == "NOBITS") \
+ 		     && index($8,"A") == 0) \
+@@ -368,20 +376,20 @@ add_minidebug()
+ 
+   # Extract the dynamic symbols from the main binary, there is no need to also have these
+   # in the normal symbol table
+-  nm -D "$binary" --format=posix --defined-only | awk '{ print $1 }' | sort > "$dynsyms"
++  ${NM} -D "$binary" --format=posix --defined-only | awk '{ print $1 }' | sort > "$dynsyms"
+   # Extract all the text (i.e. function) symbols from the debuginfo
+   # Use format sysv to make sure we can match against the actual ELF FUNC
+   # symbol type. The binutils nm posix format symbol type chars are
+   # ambigous for architectures that might use function descriptors.
+-  nm "$debuginfo" --format=sysv --defined-only | awk -F \| '{ if ($4 ~ "FUNC") print $1 }' | sort > "$funcsyms"
++  ${NM} "$debuginfo" --format=sysv --defined-only | awk -F \| '{ if ($4 ~ "FUNC") print $1 }' | sort > "$funcsyms"
+   # Keep all the function symbols not already in the dynamic symbol table
+   comm -13 "$dynsyms" "$funcsyms" > "$keep_symbols"
+   # Copy the full debuginfo, keeping only a minumal set of symbols and removing some unnecessary sections
+-  objcopy -S $remove_sections --keep-symbols="$keep_symbols" "$debuginfo" "$mini_debuginfo" &> /dev/null
++  ${OBJCOPY} -S $remove_sections --keep-symbols="$keep_symbols" "$debuginfo" "$mini_debuginfo" &> /dev/null
+   #Inject the compressed data into the .gnu_debugdata section of the original binary
+   xz "$mini_debuginfo"
+   mini_debuginfo="${mini_debuginfo}.xz"
+-  objcopy --add-section .gnu_debugdata="$mini_debuginfo" "$binary"
++  ${OBJCOPY} --add-section .gnu_debugdata="$mini_debuginfo" "$binary"
+   rm -f "$dynsyms" "$funcsyms" "$keep_symbols" "$mini_debuginfo"
+ }
+ 
+@@ -516,7 +524,7 @@ do_file()
+   if test "$f_writable" = "false"; then
+     chmod u+w "$f"
+   fi
+-  objcopy --merge-notes "$f" 2>/dev/null || true
++  ${OBJCOPY} --merge-notes "$f" 2>/dev/null || true
+   if test "$f_writable" = "false"; then
+     chmod u-w "$f"
+   fi
