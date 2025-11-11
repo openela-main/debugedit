@@ -1,0 +1,46 @@
+commit 7497274aed00c459a0d74bf171e1b11358b0210c
+Author: Mark Wielaard <mark@klomp.org>
+Date:   Thu Apr 21 00:05:38 2022 +0200
+
+    debugedit: Use standard libelf elf_strptr
+    
+    The strptr function in debugedit.c does the same thing as libelf
+    elf_strptr. But elf_strptr handles bounds checks and invalid section
+    offsets better. And elf_strptr handles compressed sections.
+    
+            * tools/debugedit.c (strptr): Just call elf_strptr.
+    
+    Signed-off-by: Mark Wielaard <mark@klomp.org>
+
+diff --git a/tools/debugedit.c b/tools/debugedit.c
+index e734dd7caadd..d82ae5a169df 100644
+--- a/tools/debugedit.c
++++ b/tools/debugedit.c
+@@ -295,25 +296,9 @@ buf_read_ube32 (unsigned char *data)
+ }
+ 
+ static const char *
+-strptr (DSO *dso, int sec, off_t offset)
++strptr (DSO *dso, size_t sec, size_t offset)
+ {
+-  Elf_Scn *scn;
+-  Elf_Data *data;
+-
+-  scn = dso->scn[sec];
+-  if (offset >= 0 && (GElf_Addr) offset < dso->shdr[sec].sh_size)
+-    {
+-      data = NULL;
+-      while ((data = elf_getdata (scn, data)) != NULL)
+-	{
+-	  if (data->d_buf
+-	      && offset >= data->d_off
+-	      && offset < data->d_off + data->d_size)
+-	    return (const char *) data->d_buf + (offset - data->d_off);
+-	}
+-    }
+-
+-  return NULL;
++  return elf_strptr (dso->elf, sec, offset);
+ }
+ 
+ 

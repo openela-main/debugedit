@@ -1,0 +1,548 @@
+commit c156ae62c3913aa86bd4cd4abda93772747e029f
+Author: Morten Linderud <morten@linderud.pw>
+Date:   Sun Nov 6 18:10:23 2022 +0100
+
+    debugedit: decompress (and recompress) DWARF sections
+    
+    When encountering compressed DWARF section try to decompress them
+    before rewriting. Afterwards recompress them. All this is
+    automatic. No new command line options.
+    
+    Decompression was added by Morten, Mark then added recompression.
+    
+    The recompression support needed a bit of workaround for an elfutils
+    < 0.192 bug https://sourceware.org/bugzilla/show_bug.cgi?id=32102
+    
+    Various new tests were added. In debugedit.at DEBUGEDIT_SETUP now
+    takes an (optional) second arg to set the -gz=... option. readelf is
+    now called with -zp to automatically decompress any compressed
+    data/string sections.
+    
+    https://sourceware.org/bugzilla/show_bug.cgi?id=27636
+    
+    Signed-off-by: Morten Linderud <morten@linderud.pw>
+    Signed-off-by: Mark Wielaard <mark@klomp.org>
+
+diff --git a/configure.ac b/configure.ac
+index f0065c9932f4..96922267b7fe 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -113,6 +113,19 @@
+ fi
+ AC_SUBST([GZ_NONE_FLAG])
+ 
++AC_CACHE_CHECK([whether gcc supports -gz=zlib], ac_cv_gz_zlib, [dnl
++save_CFLAGS="$CFLAGS"
++CFLAGS="-gz=zlib"
++AC_LINK_IFELSE([AC_LANG_PROGRAM()], ac_cv_gz_zlib=yes, ac_cv_gz_zlib=no)
++CFLAGS="$save_CFLAGS"
++])
++if test "$ac_cv_gz_zlib" = "yes"; then
++  GZ_ZLIB_FLAG="-gz=zlib"
++else
++  GZ_ZLIB_FLAG=""
++fi
++AC_SUBST([GZ_ZLIB_FLAG])
++
+ # And generate the output files.
+ AC_CONFIG_FILES([Makefile])
+ AC_OUTPUT
+diff --git a/tests/atlocal.in b/tests/atlocal.in
+index 01b998c83c7f..d3364d3e9e58 100644
+--- a/tests/atlocal.in
++++ b/tests/atlocal.in
+@@ -12,4 +12,5 @@
+ 
+ GDWARF_5_FLAG=@GDWARF_5_FLAG@
+ GZ_NONE_FLAG=@GZ_NONE_FLAG@
++GZ_ZLIB_FLAG=@GZ_ZLIB_FLAG@
+ DWARF_5_DEBUGLINE=@DWARF_5_DEBUGLINE@
+diff --git a/tests/debugedit.at b/tests/debugedit.at
+index 94b0caee5423..b125e627546d 100644
+--- a/tests/debugedit.at
++++ b/tests/debugedit.at
+@@ -1,6 +1,6 @@
+ # debugedit.at: Tests for the debugedit tool
+ #
+-# Copyright (C) 2019 Mark J. Wielaard <mark@klomp.org>
++# Copyright (C) 2019, 2024 Mark J. Wielaard <mark@klomp.org>
+ #
+ # This program is free software; you can redistribute it and/or modify
+ # it under the terms of the GNU General Public License as published by
+@@ -22,7 +22,11 @@
+ AT_TESTED([debugedit])
+ 
+ # Helper to create some test binaries.
+-# Optional parameter can specify additional gcc parameters.
++# Optional fist parameter can specify additional gcc parameters.
++# e.g. -gdwarf-4 or -gdwarf-5 for explicit DWARF version.
++# -g3 is always given. Second parameter can be a compression flag
++# like $GZ_ZLIB_FLAG (if it exists), when not given $GZ_NONE_FLAG
++# is used.
+ m4_define([DEBUGEDIT_SETUP],[[
+ # Create some test binaries. Create and build them in different subdirs
+ # to make sure they produce different relative/absolute paths.
+@@ -36,12 +40,19 @@
+ cp "${abs_srcdir}"/data/SOURCES/foobar.h subdir_headers
+ cp "${abs_srcdir}"/data/SOURCES/baz.c .
+ 
++# Check second param, if given use compression
++if test -z "$2"; then
++GZ_FLAG=$GZ_NONE_FLAG
++else
++GZ_FLAG=$2
++fi
++
+ # First three object files (foo.o subdir_bar/bar.o and baz.o)
+-$CC $CFLAGS -g3 $GZ_NONE_FLAG -Isubdir_headers $1 -c subdir_foo/foo.c
++$CC $CFLAGS -g3 $GZ_FLAG -Isubdir_headers $1 -c subdir_foo/foo.c
+ cd subdir_bar
+-$CC $CFLAGS -g3 $GZ_NONE_FLAG -I../subdir_headers $1 -c bar.c
++$CC $CFLAGS -g3 $GZ_FLAG -I../subdir_headers $1 -c bar.c
+ cd ..
+-$CC $CFLAGS -g3 $GZ_NONE_FLAG -I$(pwd)/subdir_headers $1 -c $(pwd)/baz.c
++$CC $CFLAGS -g3 $GZ_FLAG -I$(pwd)/subdir_headers $1 -c $(pwd)/baz.c
+ 
+ # Then a partially linked object file (somewhat like a kernel module).
+ # This will still have relocations between the debug sections.
+@@ -49,7 +60,7 @@
+ 
+ # Create an executable. Relocations between debug sections will
+ # have been resolved.
+-$CC $CFLAGS -g3 $GZ_NONE_FLAG -o foobarbaz.exe foo.o subdir_bar/bar.o baz.o
++$CC $CFLAGS -g3 $GZ_FLAG $1 -o foobarbaz.exe foo.o subdir_bar/bar.o baz.o
+ ]])
+ 
+ # ===
+@@ -83,6 +94,17 @@
+ 
+ AT_CLEANUP
+ 
++AT_SETUP([debugedit executable (compressed)])
++AT_KEYWORDS([debuginfo] [debugedit])
++AT_SKIP_IF([test -z "$GZ_ZLIB_FLAG"])
++DEBUGEDIT_SETUP([], [$GZ_ZLIB_FLAG])
++
++AT_CHECK([[./foobarbaz.exe]])
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.exe]])
++AT_CHECK([[./foobarbaz.exe]])
++
++AT_CLEANUP
++
+ # ===
+ # debugedit should at least replace the .debug_str directory paths
+ # in the objects.
+@@ -93,7 +115,7 @@
+ 
+ # Capture strings that start with the testdir (pwd) directory path
+ # (and replace that textually with /foo/bar/baz)
+-readelf -p.debug_str foo.o subdir_bar/bar.o baz.o | cut -c13- \
++readelf -zp.debug_str foo.o subdir_bar/bar.o baz.o | cut -c13- \
+         | grep ^$(pwd) | sort \
+         | sed -e "s@$(pwd)@/foo/bar/baz@" > expout
+ 
+@@ -108,7 +130,7 @@
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./subdir_bar/bar.o]])
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./baz.o]])
+ AT_CHECK([[
+-readelf -p.debug_str foo.o subdir_bar/bar.o baz.o | cut -c13- \
++readelf -zp.debug_str foo.o subdir_bar/bar.o baz.o | cut -c13- \
+         | grep ^/foo/bar/baz | sort
+ ]],[0],[expout])
+ 
+@@ -125,7 +147,7 @@
+ 
+ # Capture strings that start with the testdir (pwd) directory path
+ # (and replace that textually with /foo/bar/baz)
+-readelf -p.debug_str -p.debug_line_str foo.o subdir_bar/bar.o baz.o \
++readelf -zp.debug_str -p.debug_line_str foo.o subdir_bar/bar.o baz.o \
+         | cut -c13- \
+         | grep ^$(pwd) | sort | uniq \
+         | sed -e "s@$(pwd)@/foo/bar/baz@" > expout
+@@ -141,7 +163,7 @@
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./subdir_bar/bar.o]])
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./baz.o]])
+ AT_CHECK([[
+-readelf -p.debug_str -p.debug_line_str foo.o subdir_bar/bar.o baz.o \
++readelf -zp.debug_str -p.debug_line_str foo.o subdir_bar/bar.o baz.o \
+         | cut -c13- \
+         | grep ^/foo/bar/baz | sort | uniq
+ ]],[0],[expout],[ignore])
+@@ -160,7 +182,7 @@
+ # (and replace that textually with /foo/bar/baz)
+ # Note that partially linked files, might have multiple duplicate
+ # strings, but debugedit will merge them. So use sort -u.
+-readelf -p.debug_str ./foobarbaz.part.o | cut -c13- \
++readelf -zp.debug_str ./foobarbaz.part.o | cut -c13- \
+         | grep ^$(pwd) | sort -u \
+         | sed -e "s@$(pwd)@/foo/bar/baz@" > expout
+ 
+@@ -173,7 +195,7 @@
+ # Check the replaced strings are all there.
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.part.o]])
+ AT_CHECK([[
+-readelf -p.debug_str ./foobarbaz.part.o | cut -c13- \
++readelf -zp.debug_str ./foobarbaz.part.o | cut -c13- \
+         | grep ^/foo/bar/baz | sort
+ ]],[0],[expout])
+ 
+@@ -192,7 +214,7 @@
+ # (and replace that textually with /foo/bar/baz)
+ # Note that partially linked files, might have multiple duplicate
+ # strings, but debugedit will merge them. So use sort -u.
+-readelf -p.debug_str -p.debug_line_str ./foobarbaz.part.o | cut -c13- \
++readelf -zp.debug_str -zp.debug_line_str ./foobarbaz.part.o | cut -c13- \
+         | grep ^$(pwd) | sort -u | uniq \
+         | sed -e "s@$(pwd)@/foo/bar/baz@" > expout
+ 
+@@ -205,7 +227,7 @@
+ # Check the replaced strings are all there.
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.part.o]])
+ AT_CHECK([[
+-readelf -p.debug_str -p.debug_line_str ./foobarbaz.part.o | cut -c13- \
++readelf -zp.debug_str -zp.debug_line_str ./foobarbaz.part.o | cut -c13- \
+         | grep ^/foo/bar/baz | sort | uniq
+ ]],[0],[expout],[ignore])
+ 
+@@ -221,7 +243,7 @@
+ 
+ # Capture strings that start with the testdir (pwd) directory path
+ # (and replace that textually with /foo/bar/baz)
+-readelf -p.debug_str foobarbaz.exe | cut -c13- \
++readelf -zp.debug_str foobarbaz.exe | cut -c13- \
+         | grep ^$(pwd) | sort \
+         | sed -e "s@$(pwd)@/foo/bar/baz@" > expout
+ 
+@@ -235,7 +257,7 @@
+ # Check the replaced strings are all there.
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.exe]])
+ AT_CHECK([[
+-readelf -p.debug_str foobarbaz.exe | cut -c13- \
++readelf -zp.debug_str foobarbaz.exe | cut -c13- \
+         | grep ^/foo/bar/baz | sort
+ ]],[0],[expout])
+ 
+@@ -252,7 +274,7 @@
+ 
+ # Capture strings that start with the testdir (pwd) directory path
+ # (and replace that textually with /foo/bar/baz)
+-readelf -p.debug_str -p.debug_line_str foobarbaz.exe | cut -c13- \
++readelf -zp.debug_str -zp.debug_line_str foobarbaz.exe | cut -c13- \
+         | grep ^$(pwd) | sort | uniq \
+         | sed -e "s@$(pwd)@/foo/bar/baz@" > expout
+ 
+@@ -266,7 +288,7 @@
+ # Check the replaced strings are all there.
+ AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.exe]])
+ AT_CHECK([[
+-readelf -p.debug_str -p.debug_line_str foobarbaz.exe | cut -c13- \
++readelf -zp.debug_str -zp.debug_line_str foobarbaz.exe | cut -c13- \
+         | grep ^/foo/bar/baz | sort | uniq
+ ]],[0],[expout],[ignore])
+ 
+@@ -312,6 +334,30 @@
+ 
+ AT_CLEANUP
+ 
++AT_SETUP([debugedit .debug_info objects (compressed)])
++AT_KEYWORDS([debuginfo] [debugedit])
++AT_SKIP_IF([test -z "$GZ_ZLIB_FLAG"])
++DEBUGEDIT_SETUP([], [$GZ_ZLIB_FLAG])
++
++AT_DATA([expout],
++[/foo/bar/baz
++/foo/bar/baz/baz.c
++/foo/bar/baz/subdir_bar
++])
++
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foo.o]])
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./subdir_bar/bar.o]])
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./baz.o]])
++AT_CHECK([[
++(readelf --debug-dump=info foo.o; \
++ readelf --debug-dump=info subdir_bar/bar.o; \
++ readelf --debug-dump=info baz.o) \
++        | grep -E 'DW_AT_(name|comp_dir)' \
++        | rev | cut -d: -f1 | rev | cut -c2- | grep ^/foo/bar/baz | sort -u
++]],[0],[expout])
++
++AT_CLEANUP
++
+ # ===
+ # Make sure DW_AT_name and DW_AT_comp_dir strings are replaced
+ # in partial linked object.
+@@ -335,6 +381,26 @@
+ 
+ AT_CLEANUP
+ 
++AT_SETUP([debugedit .debug_info partial (compressed)])
++AT_KEYWORDS([debuginfo] [debugedit])
++AT_SKIP_IF([test -z "$GZ_ZLIB_FLAG"])
++DEBUGEDIT_SETUP([], [$GZ_ZLIB_FLAG])
++
++AT_DATA([expout],
++[/foo/bar/baz
++/foo/bar/baz/baz.c
++/foo/bar/baz/subdir_bar
++])
++
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.part.o]])
++AT_CHECK([[
++readelf --debug-dump=info ./foobarbaz.part.o \
++        | grep -E 'DW_AT_(name|comp_dir)' \
++        | rev | cut -d: -f1 | rev | cut -c2- | grep ^/foo/bar/baz | sort -u
++]],[0],[expout])
++
++AT_CLEANUP
++
+ # ===
+ # Make sure DW_AT_name and DW_AT_comp_dir strings are replaced
+ # in executable.
+@@ -357,6 +423,25 @@
+ 
+ AT_CLEANUP
+ 
++AT_SETUP([debugedit .debug_info exe (compressed)])
++AT_KEYWORDS([debuginfo] [debugedit])
++AT_SKIP_IF([test -z "$GZ_ZLIB_FLAG"])
++DEBUGEDIT_SETUP([], [$GZ_ZLIB_FLAG])
++
++AT_DATA([expout],
++[/foo/bar/baz
++/foo/bar/baz/baz.c
++/foo/bar/baz/subdir_bar
++])
++
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.exe]])
++AT_CHECK([[
++readelf --debug-dump=info ./foobarbaz.exe | grep -E 'DW_AT_(name|comp_dir)' \
++        | rev | cut -d: -f1 | rev | cut -c2- | grep ^/foo/bar/baz | sort -u
++]],[0],[expout])
++
++AT_CLEANUP
++
+ # ===
+ # Make sure -fdebug-types-section has updated strings in objects.
+ # Currently only works with DWARF4
+@@ -673,6 +758,26 @@
+ 
+ AT_CLEANUP
+ 
++AT_SETUP([debugedit .debug_macro exe (compressed)])
++AT_KEYWORDS([debuginfo] [debugedit])
++AT_SKIP_IF([test -z "$GZ_ZLIB_FLAG"])
++DEBUGEDIT_SETUP([$DEBUG_MACRO_FLAG], [$GZ_ZLIB_FLAG])
++
++# We expect 3 for each compile unit.
++AT_DATA([expout],
++[NUMBER 42
++NUMBER 42
++NUMBER 42
++])
++
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.exe]])
++AT_CHECK([[
++readelf --debug-dump=macro ./foobarbaz.exe \
++        | grep NUMBER | rev | cut -d: -f1 | rev | cut -c2-
++]],[0],[expout])
++
++AT_CLEANUP
++
+ # ===
+ # source list mode dwarf-4
+ # ===
+@@ -696,3 +801,26 @@
+ AT_CHECK([[debugedit -l sources.list main]])
+ AT_CHECK([[grep -q main.c sources.list]])
+ AT_CLEANUP
++
++# ===
++# source list with compression dwarf-4
++# ===
++AT_SETUP([debugedit --list-file compressed DWARF4])
++AT_KEYWORDS([debuginfo] [debugedit])
++echo "int main () { }" > main.c
++$CC $CFLAGS $GZ_ZLIB_FLAG -gdwarf-4 -o main main.c
++AT_CHECK([[debugedit -l sources.list main]])
++AT_CHECK([[grep -q main.c sources.list]])
++AT_CLEANUP
++
++# ===
++# source list with compression dwarf-5
++# ===
++AT_SETUP([debugedit --list-file compressed DWARF5])
++AT_KEYWORDS([debuginfo] [debugedit])
++AT_SKIP_IF([test "$GDWARF_5_FLAG" = "no"])
++echo "int main () { }" > main.c
++$CC $CFLAGS $GZ_ZLIB_FLAG -gdwarf-5 -o main main.c
++AT_CHECK([[debugedit -l sources.list main]])
++AT_CHECK([[grep -q main.c sources.list]])
++AT_CLEANUP
+diff --git a/tools/debugedit.c b/tools/debugedit.c
+index 6712f0fca2d0..beefd65bab6a 100644
+--- a/tools/debugedit.c
++++ b/tools/debugedit.c
+@@ -41,6 +41,7 @@
+ 
+ #include <gelf.h>
+ #include <dwarf.h>
++#include <libelf.h>
+ 
+ #ifndef MAX
+ #define MAX(m, n) ((m) < (n) ? (n) : (m))
+@@ -118,6 +119,10 @@ static bool need_line_strp_update = false;
+    DW_AT_stmt_list attributes indexes in the debug_info. */
+ static bool need_stmt_update = false;
+ 
++/* If we recompress any debug section we need to write out the ELF
++   again. */
++static bool recompressed = false;
++
+ /* Storage for dynamically allocated strings to put into string
+    table. Keep together in memory blocks of 16K. */
+ #define STRMEMSIZE (16 * 1024)
+@@ -445,6 +445,7 @@
+     int sec, relsec;
+     REL *relbuf;
+     REL *relend;
++    uint32_t ch_type;
+     /* Only happens for COMDAT .debug_macro and .debug_types.  */
+     struct debug_section *next;
+   } debug_section;
+@@ -1503,16 +1509,22 @@ static void
+ edit_dwarf2_line (DSO *dso)
+ {
+   Elf_Data *linedata = debug_sections[DEBUG_LINE].elf_data;
+-  int linendx = debug_sections[DEBUG_LINE].sec;
+-  Elf_Scn *linescn = dso->scn[linendx];
+   unsigned char *old_buf = linedata->d_buf;
+ 
+-  /* Out with the old. */
+-  linedata->d_size = 0;
++  /* A nicer way to do this would be to set the original d_size to
++     zero and add a new Elf_Data section to contain the new data.
++     Out with the old. In with the new.
+ 
+-  /* In with the new. */
++  int linendx = debug_sections[DEBUG_LINE].sec;
++  Elf_Scn *linescn = dso->scn[linendx];
++  linedata->d_size = 0;
+   linedata = elf_newdata (linescn);
+ 
++    But when we then (recompress) the section there is a bug in
++    elfutils < 0.192 that causes the compression to fail/create bad
++    compressed data. So we just reuse the existing linedata (possibly
++    loosing track of the original d_buf, which will be overwritten).  */
++
+   dso->lines.line_buf = malloc (dso->lines.debug_lines_len);
+   if (dso->lines.line_buf == NULL)
+     error (1, ENOMEM, "No memory for new .debug_line table (0x%zx bytes)",
+@@ -1660,6 +1672,7 @@ edit_dwarf2_line (DSO *dso)
+       memcpy (ptr, optr, remaining);
+       ptr += remaining;
+     }
++  elf_flagdata (linedata, ELF_C_SET, ELF_F_DIRTY);
+ }
+ 
+ /* Record or adjust (according to phase) DW_FORM_strp or DW_FORM_line_strp.
+@@ -2744,20 +2757,28 @@ edit_dwarf2_any_str (DSO *dso, struct strings *strings, debug_section *secp)
+ {
+   Strtab *strtab = strings->str_tab;
+   Elf_Data *strdata = secp->elf_data;
++
++  /* A nicer way to do this would be to set the original d_size to
++     zero and add a new Elf_Data section to contain the new data.
++     Out with the old. In with the new.
++
+   int strndx = secp->sec;
+   Elf_Scn *strscn = dso->scn[strndx];
+-
+-  /* Out with the old. */
+   strdata->d_size = 0;
+-  /* In with the new. */
+   strdata = elf_newdata (strscn);
+ 
++    But when we then (recompress) the section there is a bug in
++    elfutils < 0.192 that causes the compression to fail/create bad
++    compressed data. So we just reuse the existing strdata (possibly
++    loosing track of the original d_buf, which will be overwritten).  */
++
+   /* We really should check whether we had enough memory,
+      but the old ebl version will just abort on out of
+      memory... */
+   strtab_finalize (strtab, strdata);
+   secp->size = strdata->d_size;
+   strings->str_buf = strdata->d_buf;
++  elf_flagdata (strdata, ELF_C_SET, ELF_F_DIRTY);
+ }
+ 
+ /* Rebuild .debug_str_offsets.  */
+@@ -2869,6 +2890,22 @@ edit_dwarf2 (DSO *dso)
+ 		    }
+ 
+ 		  scn = dso->scn[i];
++
++		  /* Check for compressed DWARF headers. Records
++		     ch_type so we can recompress headers after we
++		     processed the data.  */
++		  if (dso->shdr[i].sh_flags & SHF_COMPRESSED)
++		    {
++		      GElf_Chdr chdr;
++		      if (gelf_getchdr(dso->scn[i], &chdr) == NULL)
++			error (1, 0, "Couldn't get compressed header: %s",
++			       elf_errmsg (-1));
++		      debug_sec->ch_type = chdr.ch_type;
++		      if (elf_compress (scn, 0, 0) < 0)
++			error (1, 0, "Failed decompression");
++		      gelf_getshdr (scn, &dso->shdr[i]);
++		    }
++
+ 		  data = elf_getdata (scn, NULL);
+ 		  assert (data != NULL && data->d_buf != NULL);
+ 		  assert (elf_getdata (scn, data) == NULL);
+@@ -3743,6 +3780,35 @@ main (int argc, char *argv[])
+ 	}
+     }
+ 
++  /* Recompress any debug sections that might have been uncompressed.  */
++  if (dirty_elf)
++    for (int s = 0; debug_sections[s].name; s++)
++      {
++	for (struct debug_section *secp = &debug_sections[s]; secp != NULL;
++	     secp = secp->next)
++	  {
++	    if (secp->ch_type != 0)
++	      {
++		int sec = secp->sec;
++		Elf_Scn *scn = dso->scn[sec];
++		GElf_Shdr shdr = dso->shdr[sec];
++		Elf_Data *data;
++		data = elf_getdata (scn, NULL);
++		if (elf_compress (scn, secp->ch_type, 0) < 0)
++		  error (1, 0, "Failed recompression");
++		gelf_getshdr (scn, &shdr);
++		dso->shdr[secp->sec] = shdr;
++		data = elf_getdata (scn, NULL);
++		secp->elf_data = data;
++		secp->data = data->d_buf;
++		secp->size = data->d_size;
++		elf_flagshdr (scn, ELF_C_SET, ELF_F_DIRTY);
++		elf_flagdata (data, ELF_C_SET, ELF_F_DIRTY);
++		recompressed = 1;
++	      }
++	  }
++      }
++
+   /* Normally we only need to explicitly update the section headers
+      and data when any section data changed size. But because of a bug
+      in elfutils before 0.169 we will have to update and write out all
+@@ -3750,7 +3816,8 @@ main (int argc, char *argv[])
+      set). https://sourceware.org/bugzilla/show_bug.cgi?id=21199 */
+   bool need_update = (need_strp_update
+ 		      || need_line_strp_update
+-		      || need_stmt_update);
++		      || need_stmt_update
++		      || recompressed);
+ 
+ #if !_ELFUTILS_PREREQ (0, 169)
+   /* string replacements or build_id updates don't change section size. */

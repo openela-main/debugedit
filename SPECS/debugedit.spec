@@ -1,6 +1,6 @@
 Name: debugedit
 Version: 5.0
-Release: 5%{?dist}
+Release: 11%{?dist}
 Summary: Tools for debuginfo creation
 License: GPLv3+ and GPLv2+ and LGPLv2+
 URL: https://sourceware.org/debugedit/
@@ -41,6 +41,15 @@ Requires: grep
 Patch1: 0001-tests-Handle-zero-directory-entry-in-.debug_line-DWA.patch
 Patch2: 0002-scripts-find-debuginfo.in-Add-q-quiet.patch
 Patch3: 0001-debugedit-Add-support-for-.debug_str_offsets-DW_FORM.patch
+Patch4: 0003-elf_strptr.patch
+Patch5: 0004-compress.patch
+Patch6: 0005-writable.patch
+patch7: 0001-debug_str_offsets-header-version-and-padding-are-2-b.patch
+patch8: 0001-debugedit-Handle-unused-.debug_str_offsets-entries.patch
+Patch9: 0001-find-debuginfo-Fix-skip_mini-.gnu_debugdata-handling.patch
+Patch10: 0006-pr32157-handle-dwarf5-DW_UT_type-unit-type-2.patch
+Patch11: 0001-Add-basic-find-debuginfo-script-tests.patch
+Patch12: debugedit-5.0-find-debuginfo-tests-fixups.patch
 
 %description
 The debugedit project provides programs and scripts for creating
@@ -84,6 +93,27 @@ make check %{?_smp_mflags}
 %{_mandir}/man1/find-debuginfo.1*
 
 %changelog
+* Fri Jun 20 2025 Mark Wielaard <mjw@redhat.com> - 5.0-11
+- Add 0001-Add-basic-find-debuginfo-script-tests.patch
+- Add debugedit-5.0-find-debuginfo-tests-fixups.patch
+
+* Thu Apr 17 2025 Martin Cermak <mcermak@redhat.com> - 5.0-10
+- Add 0006-pr32157-handle-dwarf5-DW_UT_type-unit-type-2.patch
+
+* Tue Apr 15 2025 Mark Wielaard <mjw@redhat.com> - 5.0-9
+- Add 0001-find-debuginfo-Fix-skip_mini-.gnu_debugdata-handling.patch
+
+* Fri Apr 11 2025 Mark Wielaard <mjw@redhat.com> - 5.0-8
+- Add 0001-debug_str_offsets-header-version-and-padding-are-2-b.patch
+- Add 0001-debugedit-Handle-unused-.debug_str_offsets-entries.patch
+
+* Fri Mar 21 2025 Mark Wielaard <mjw@redhat.com> - 5.0-7
+- Add 0005-writable.patch
+
+* Fri Mar 21 2025 Mark Wielaard <mjw@redhat.com> - 5.0-6
+- Add 0003-elf_strptr.patch
+- Add 0004-compress.patch
+
 * Mon Dec  4 2023 Mark Wielaard <mjw@redhat.com> - 5.0-5
 - Add 0001-debugedit-Add-support-for-.debug_str_offsets-DW_FORM.patch
 

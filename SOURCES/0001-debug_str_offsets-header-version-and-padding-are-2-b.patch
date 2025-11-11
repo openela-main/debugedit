@@ -1,0 +1,34 @@
+From bd45e5ad0541036b698ad7ed8b95f5a5f977b7c8 Mon Sep 17 00:00:00 2001
+From: Mark Wielaard <mark@klomp.org>
+Date: Sun, 5 May 2024 20:41:12 +0200
+Subject: [PATCH] debug_str_offsets header version and padding are 2 bytes, not
+ 4 bytes
+
+Reading too much bytes for the header made debugedit skip the first
+actual string offsets table entry.
+
+Signed-off-by: Mark Wielaard <mark@klomp.org>
+---
+ tools/debugedit.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/debugedit.c b/tools/debugedit.c
+index 2990f962cd37..1307a149de8b 100644
+--- a/tools/debugedit.c
++++ b/tools/debugedit.c
+@@ -2731,10 +2731,10 @@ update_str_offsets (DSO *dso)
+       if (unit_length == 0xffffffff || endp - ptr < unit_length)
+ 	break;
+       unsigned char *endidxp = ptr + unit_length;
+-      uint32_t version = read_32 (ptr);
++      uint32_t version = read_16 (ptr);
+       if (version != 5)
+ 	break;
+-      uint32_t padding = read_32 (ptr);
++      uint32_t padding = read_16 (ptr);
+       if (padding != 0)
+ 	break;
+ 
+-- 
+2.49.0
+

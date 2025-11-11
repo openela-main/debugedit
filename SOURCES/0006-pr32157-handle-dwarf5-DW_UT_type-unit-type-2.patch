@@ -1,0 +1,114 @@
+commit a359559d4a7696a415cfec5f924363d26cb9a4eb
+Author: Mark Wielaard <mark@klomp.org>
+Date:   Sat Sep 28 23:39:29 2024 +0200
+
+    debugedit: Handle DWARF5 DW_UT_type (Unit type 2) in ET_EXE/DYN
+    
+    Handle DW_UT_type as if it is a DW_UT_compile unit by skipping the
+    type id and offset in the header. Which are the only differences with
+    DW_UT_compile. And the id and offset don't need to be rewritten. This
+    doesn't handle debug types in objects or partial linked (ET_REL) files
+    that contain COMDAT sections (because debugedit doesn't handle more
+    than one debug_info section). Add a testcase for foobarbaz.exe.
+    
+    https://sourceware.org/bugzilla/show_bug.cgi?id=32157
+    
+    Signed-off-by: Mark Wielaard <mark@klomp.org>
+
+diff --git a/tests/debugedit.at b/tests/debugedit.at
+index 9432e30..55f9b54 100644
+--- a/tests/debugedit.at
++++ b/tests/debugedit.at
+@@ -510,9 +510,9 @@ AT_CLEANUP
+ 
+ # ===
+ # Make sure -fdebug-types-section has updated strings in executable.
+-# Currently only works with DWARF4
++# DWARF4
+ # ===
+-AT_SETUP([debugedit .debug_types exe])
++AT_SETUP([debugedit .debug_types exe DWARF4])
+ AT_KEYWORDS([debugtypes] [debugedit])
+ DEBUGEDIT_SETUP([-fdebug-types-section -gdwarf-4])
+ 
+@@ -537,6 +537,37 @@ readelf --debug-dump=info ./foobarbaz.exe \
+ 
+ AT_CLEANUP
+ 
++# ===
++# Make sure -fdebug-types-section has updated strings in executable.
++# DWARF5
++# ===
++AT_SETUP([debugedit .debug_types exe DWARF5])
++AT_KEYWORDS([debugtypes] [debugedit])
++DEBUGEDIT_SETUP([-fdebug-types-section -gdwarf-5])
++AT_SKIP_IF([test "$GDWARF_5_FLAG" = "no"])
++AT_SKIP_IF([! $READELF --debug-dump=info ./foobarbaz.exe | grep -F -q 'DW_TAG_type_unit'])
++
++AT_DATA([expout],
++[st1
++stb
++stf
++stringp1
++stringp_bar
++stringp_baz
++stringp_foo
++stz
++])
++
++AT_CHECK([[debugedit -b $(pwd) -d /foo/bar/baz ./foobarbaz.exe]])
++AT_CHECK([[
++$READELF --debug-dump=info ./foobarbaz.exe \
++        | awk '/Abbrev Number:.*DW_TAG_type_unit/{p=1}{if(p)print}/^$/{p=0}' \
++        | sed -n 's/^.*> *DW_AT_name *:.* \(stringp[^ ]*\|st.\)$/\1/p' \
++        | sort
++]],[0],[expout])
++
++AT_CLEANUP
++
+ # foo.o and bar.o are build with relative paths and so will use the
+ # comp_dir (from .debug_info). But bar.o is build from sources with
+ # an absolute path, so the .debug_line Directory Table should contain
+diff --git a/tools/debugedit.c b/tools/debugedit.c
+index 64be05c..939db62 100644
+--- a/tools/debugedit.c
++++ b/tools/debugedit.c
+@@ -2602,10 +2602,13 @@ edit_info (DSO *dso, int phase, struct debug_section *sec)
+ 
+       int cu_ptr_size = 0;
+ 
++      uint8_t unit_type = DW_UT_compile;
+       if (cu_version >= 5)
+ 	{
+-	  uint8_t unit_type = read_8 (ptr);
+-	  if (unit_type != DW_UT_compile && unit_type != DW_UT_partial)
++	  unit_type = read_8 (ptr);
++	  if (unit_type != DW_UT_compile
++	      && unit_type != DW_UT_partial
++	      && unit_type != DW_UT_type)
+ 	    {
+ 	      error (0, 0, "%s: Unit type %u unhandled", dso->filename,
+ 		     unit_type);
+@@ -2615,7 +2618,12 @@ edit_info (DSO *dso, int phase, struct debug_section *sec)
+ 	  cu_ptr_size = read_8 (ptr);
+ 	}
+ 
+-      unsigned char *header_end = (cu_start + 23 + (cu_version < 5 ? 0 : 1));
++      unsigned char *header_end = (cu_start + 23
++				   + (cu_version < 5
++				      ? 0
++				      : (unit_type != DW_UT_type
++					 ? 1 /* unit */
++					 : 1 + 8 + 4))); /* unit, id, off */
+       if (header_end > endsec)
+ 	{
+ 	  error (0, 0, "%s: %s CU header too small", dso->filename, sec->name);
+@@ -2653,7 +2661,7 @@ edit_info (DSO *dso, int phase, struct debug_section *sec)
+ 	  return 1;
+ 	}
+ 
+-      if (sec != &debug_sections[DEBUG_INFO])
++      if (sec != &debug_sections[DEBUG_INFO] || unit_type == DW_UT_type)
+ 	ptr += 12; /* Skip type_signature and type_offset.  */
+ 
+       abbrev = read_abbrev (dso,
